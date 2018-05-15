@@ -1,0 +1,215 @@
+---
+title: "Practical Machine Learning Project"
+author: "Adolfo Corrales"
+date: "15 de mayo de 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Synopsis
+
+Using the **"Weight Lifting Exercises Dataset"** from the paper *Qualitative Activity Recognition of Weight Lifting Exercises* by Eduardo Velloso, Andreas Bulling, Hans Gellersen, Wallace Ugulino and Hugo Fuks, we performed an exercise of machine learning prediction. 
+
+The goal of the project is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did a particular exercise. The manner is a factor variable named "classe" in the training set. It has five possible outcomes or classes (from "A" to "E") that stand for the quality of execution for particular exercise. The idea is to use measures from the accelerometers (stored in a initial set of  160 variables) to predict the class in a test set of 20 different cases. 
+
+## Exploratory analysis
+
+Training and test data are provided in the course project. After downloading the csv files, we proceed to read them in R and look into the structure of the data sets
+
+```{r, echo=FALSE}
+# set working directory
+setwd("~/ADOLFO/COURSERA PRACTICAL MACHINE LEARNING/COURSE_PROJECT")
+#reading data
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+```
+
+```{r}
+dim(training); dim(testing)
+```
+
+The training set has more than 19,000 cases and 160 variables. The test set has only 20 cases and the same number of variables (160). The variable "classe" is not in the test set (a variable called "problem_id" is placed instead). For that reason, accuracy cannot be measured in the test set. Nevertheless, the applied methods use cross validation methodology and so out of sample data are used to assess accuracy. 
+
+Before going further, let's call the needed libraries to be used in the analysis
+
+```{r, warning= FALSE, message=FALSE}
+library(caret)
+library(ggplot2)
+library(gridExtra)
+library(polycor)
+library(mlbench)
+library(knitr)
+```
+
+### Data cleansing
+After analysing the data we found some important features:
+
+1.- The first 7 columns are not measures from the accelerometers, and they are discarded as predictors
+
+```{r, echo=FALSE}
+training <- training[,-c(1:7)]
+testing<- testing[,-c(1:7)]
+```
+
+2.- There is a lot of "NA" values in quite a few variables. We propose the following code to asses the number of "NA" in each column:
+
+```{r}
+HowmanyNa<-sapply(training, function(x) round(mean(is.na(x)),3))
+table(HowmanyNa)
+```
+
+67 out of the 153 remaining variables (after dropping the first 7 initial columns) have more than 97% "NA" values. With such a huge proportion, Imputing missing values would not be suitable. Those columns are also eliminated, leaving 86 valid predictors.
+
+```{r, echo=FALSE}
+training <- training[,HowmanyNa<0.97]
+testing <- testing[,HowmanyNa<0.97]
+dim(training); dim(testing)
+```
+
+3.- A final decisions is to eliminate variables with low variance applying the R function "nearZeroVar" to the training data and dropping out more than 30 additional columns.
+
+```{r}
+Lowvar <- nearZeroVar(training)
+training_clear <- training[,-Lowvar]
+testing_clear <- testing[,-Lowvar]
+dim(training_clear); dim(testing_clear)
+```
+
+The final training set has 53 variables left.
+
+## Machine Learning methods
+
+Machine Learning predicting methods will be applied to assess the importance of the predictors and, most important, to predict "classe" in the test set. In all the methods we will assess out of sample accuracy. All methods that we have tried, use the R package **"caret"**. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# preparing paralle running
+if(!require(foreach)) install.packages("foreach")
+if(!require(doParallel)) install.packages("doParallel")
+library(parallel)
+library(doParallel) 
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+# Configure trainControl object
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+```
+
+### 1^st^ Model: Linear Discriminant Analysis
+Before running this first method, let's define "x" (predictor's matrix) and "y" (outcome vector) to improve performance:
+
+```{r}
+x <- training_clear[,-53]
+y <- training_clear[,53]
+```
+
+Now we will use the **"train"**" function with **method ="lda"** to apply linear discriminant analysis. We use confusion matrix to asses the out of sample accuracy in the training set
+
+```{r}
+set.seed(9530)
+Modellda <- train(x,y,method="lda", 
+                    trControl = fitControl)
+confusionMatrix.train(Modellda)
+```
+The confusion matrix gives a rather poor result of 70% accuracy. Maybe this is not the best model. Nevertheless, predictions for the test set are stored in the **predictlda** variable.
+
+```{r echo=FALSE}
+predictlda <- predict(Modellda, newdata=testing_clear)
+predictlda
+```
+
+### 2^nd^ Model: Random Forest
+
+Our second try is a random forest model with the following code:
+
+```{r, cache=TRUE}
+set.seed(2351)
+Modelrf <- train(x,y,method="rf", 
+                  trControl = fitControl)
+confusionMatrix.train(Modelrf)
+```
+Results form the confusion matrix are much more promising. We can use the model to asses the importance of the predictors.
+
+```{r, echo=FALSE}
+Importancerf <-varImp(Modelrf)$importance
+```
+
+The following picture illustrates the importance of the predictors
+
+```{r, echo=FALSE, fig.align="center", fig.width=8}
+g2 <- ggplot(Importancerf, aes(x=reorder(rownames(Importancerf), Overall), y=Overall))+
+        geom_bar(stat="identity",color="white", fill="red", size=0.5)+
+        coord_flip()+
+        labs(title="Random Forest", x="Predictors", y= "Importance")
+g2
+```
+
+And, finally, the predictions for the test set
+
+```{r, echo=FALSE}
+predictrf <- predict(Modelrf, newdata=testing_clear)
+predictrf
+```
+
+### 3^rd^ Model: Generalized Boosted Models
+Our final try is a "generalized boosted model" using the following code:
+
+```{r}
+set.seed(3541)
+Modelgbm <- train(x,y,method="gbm", 
+                 trControl = fitControl, verbose=FALSE)
+confusionMatrix.train(Modelgbm)
+```
+
+Confusion Matrix shows lower accuracy than in the random forest case, but the model works better that "lda". A plot can illustrate the relative importance of the predictors under this model compared with the Random Forest case
+
+```{r, fig.align='center', echo=FALSE}
+influence<-summary(Modelgbm, plotit=FALSE)
+g3 <- ggplot(influence, aes(x=reorder(var, rel.inf), y=rel.inf))+
+        geom_bar(stat="identity",color="white", fill="green", size=0.5)+
+        coord_flip()+
+        labs(title="GBM Model", x="Predictors", y= "Importance")
+grid.arrange(g2,g3, nrow=1, top="Influence of the predictors")
+```
+
+Most of the variables have same relative importance in the two models. We now make predictions for the test set, and compare them with predictions from the rf model
+
+```{r, echo=FALSE}
+predictgbm <- predict(Modelgbm, newdata=testing_clear)
+predictgbm
+```
+
+Although the "gbm" model is less accurate than "rf" model for the out of sample data, predictions for the test set are exactly the same, as shown in the table below:
+
+```{r compare_predictions, echo=FALSE}
+table(predictgbm, predictrf)
+```
+
+```{r, echo = FALSE}
+# De-register parallel processing cluster
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Summary and conclussions
+
+Three model have been proposed to predict the **"classe"** variable in the test set. Out of sample accuracy has been assessed and the Random Forest ("rf") model seems to be the most accurate. The table below compares accuracy for the three models
+
+###Accuracy of the models
+```{r, echo=FALSE}
+predTable <- data.frame(predlda=predictlda, predrf=predictrf, predgbm=predictgbm)
+accuracy <- data.frame(lda=0.7, rf=0.993, gbm=0.963)
+accuracy
+```
+
+Next table depicts predictions for the three proposed models:
+
+```{r, echo=FALSE}
+kable(predTable, col.names = c("lda", "rf", "gbm"), row.names = TRUE)
+```
+
+The most accurate method: Random Forest (rf) will be finally used to predict test data.
